@@ -16,5 +16,5 @@ export class CreateTaskDto {
   eventId: string;
 
   @IsUUID()
-  assignedTo: string;
+  assignedToId: string;
 }

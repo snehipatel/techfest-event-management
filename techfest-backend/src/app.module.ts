@@ -12,6 +12,7 @@ import { TasksModule } from './tasks/tasks.module';
 import { UsersModule } from './users/users.module';
 import { InvitesModule } from './invites/invites.module';
 import { ActivityLogsModule } from './activity-logs/activity-logs.module';
+import { DocumentsModule } from './documents/documents.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { ActivityLogsModule } from './activity-logs/activity-logs.module';
     RedisModule,
     InvitesModule,
     ActivityLogsModule,
+    DocumentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

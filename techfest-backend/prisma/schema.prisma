@@ -18,6 +18,11 @@ enum Role {
   STUDENT
 }
 
+enum TeamRole {
+  TEAM_LEAD
+  VOLUNTEER
+}
+
 enum RegistrationStatus {
   PENDING
   APPROVED
@@ -31,19 +36,27 @@ enum TaskStatus {
 }
 
 model User {
-  id            String   @id @default(uuid())
-  name          String
-  email         String   @unique
-  password      String
-  role          Role
-  referralCode  String?  @unique
-  createdAt     DateTime @default(now())
+  id                String           @id @default(uuid())
+  name              String
+  email             String           @unique
+  password          String
+  role              Role
+  referralCode      String?          @unique
+  createdAt         DateTime         @default(now())
+  documentsUploaded Document[]
+  documentAccess    DocumentAccess[]
 
-  registrations Registration[]
-  tasks         Task[]
-  teams         Team[]         @relation("TeamMembers")
-  notifications Notification[]
-  activityLogs  ActivityLog[]
+  // 🔥 HIERARCHY
+  reportsToId  String?
+  reportsTo    User?   @relation("UserHierarchy", fields: [reportsToId], references: [id])
+  subordinates User[]  @relation("UserHierarchy")
+
+  registrations     Registration[]
+  tasksAssignedToMe Task[]         @relation("AssignedTo")
+  tasksAssignedByMe Task[]         @relation("AssignedBy")
+  teams             TeamMember[]
+  notifications     Notification[]
+  activityLogs      ActivityLog[]
 }
 
 model Event {
@@ -56,9 +69,9 @@ model Event {
   maxParticipants Int
   createdAt       DateTime @default(now())
 
-  registrations   Registration[]
-  tasks           Task[]
-  teams           Team[]
+  registrations Registration[]
+  tasks         Task[]
+  teams         Team[]
 }
 
 model Team {
@@ -68,8 +81,45 @@ model Team {
   createdAt DateTime @default(now())
 
   event         Event          @relation(fields: [eventId], references: [id])
-  members       User[]         @relation("TeamMembers")
-  registrations Registration[]   // 🔥 Added opposite relation
+  members       TeamMember[]
+  documents     Document[]
+  registrations Registration[]
+}
+
+model TeamMember {
+  id     String   @id @default(uuid())
+  teamId String
+  userId String
+  role   TeamRole // TEAM_LEAD or VOLUNTEER
+
+  team Team @relation(fields: [teamId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([teamId, userId])
+}
+
+model Document {
+  id         String   @id @default(uuid())
+  title      String
+  fileUrl    String
+  uploadedBy String
+  teamId     String?
+  createdAt  DateTime @default(now())
+
+  uploader User             @relation(fields: [uploadedBy], references: [id])
+  team     Team?            @relation(fields: [teamId], references: [id])
+  access   DocumentAccess[]
+}
+
+model DocumentAccess {
+  id         String @id @default(uuid())
+  documentId String
+  userId     String
+
+  document Document @relation(fields: [documentId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@unique([documentId, userId])
 }
 
 model Registration {
@@ -80,24 +130,28 @@ model Registration {
   status    RegistrationStatus @default(PENDING)
   createdAt DateTime           @default(now())
 
-  user      User  @relation(fields: [userId], references: [id])
-  event     Event @relation(fields: [eventId], references: [id])
-  team      Team? @relation(fields: [teamId], references: [id])
-  payment   Payment?
+  user    User     @relation(fields: [userId], references: [id])
+  event   Event    @relation(fields: [eventId], references: [id])
+  team    Team?    @relation(fields: [teamId], references: [id])
+  payment Payment?
 }
 
 model Task {
-  id            String     @id @default(uuid())
-  title         String
-  description   String?
-  deadline      DateTime
-  status        TaskStatus @default(TODO)
-  eventId       String
-  assignedTo    String
-  completedAt   DateTime?      // 🔥 NEW
+  id          String     @id @default(uuid())
+  title       String
+  description String?
+  deadline    DateTime
+  status      TaskStatus @default(TODO)
 
-  event       Event @relation(fields: [eventId], references: [id])
-  user        User  @relation(fields: [assignedTo], references: [id])
+  eventId      String
+  assignedToId String
+  assignedById String
+  completedAt  DateTime?
+
+  event Event @relation(fields: [eventId], references: [id])
+
+  assignedTo User @relation("AssignedTo", fields: [assignedToId], references: [id])
+  assignedBy User @relation("AssignedBy", fields: [assignedById], references: [id])
 }
 
 model Notification {
@@ -107,7 +161,7 @@ model Notification {
   userId    String?
   createdAt DateTime @default(now())
 
-  user      User? @relation(fields: [userId], references: [id])
+  user User? @relation(fields: [userId], references: [id])
 }
 
 model ActivityLog {
@@ -117,7 +171,7 @@ model ActivityLog {
   userId    String
   createdAt DateTime @default(now())
 
-  user      User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 }
 
 model Payment {
@@ -128,5 +182,5 @@ model Payment {
   transactionId  String?
   createdAt      DateTime @default(now())
 
-  registration   Registration @relation(fields: [registrationId], references: [id])
+  registration Registration @relation(fields: [registrationId], references: [id])
 }

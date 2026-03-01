@@ -18,6 +18,7 @@ export class UsersService {
         email: true,
         role: true,
         createdAt: true,
+        reportsToId: true,   // ✅ REQUIRED
       },
       orderBy: { createdAt: 'desc' },
     });

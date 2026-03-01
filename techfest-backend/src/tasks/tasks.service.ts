@@ -7,6 +7,7 @@ import { UpdateTaskStatusDto } from './dto/update-task-status.dto';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import { UpdateTaskDto } from './dto/update-task.dto';
 
 @Injectable()
 export class TasksService {
@@ -32,23 +33,47 @@ export class TasksService {
   }
 
   async create(dto: CreateTaskDto, currentUser: JwtPayload) {
-    await this.prisma.activityLog.create({
-      data: {
-        action: "Task Created",
-        details: `Task ${dto.title} created`,
-        userId: dto.assignedTo, 
+    const creator = await this.prisma.user.findUnique({
+      where: { id: currentUser.sub },
+    });
+  
+    const targetUser = await this.prisma.user.findUnique({
+      where: { id: dto.assignedToId },
+      select: {
+        id: true,
+        role: true,
+        reportsToId: true,
+        name: true,
       },
     });
-
-    const event = await this.prisma.event.findUnique({
-      where: { id: dto.eventId },
-    });
-    if (!event) throw new NotFoundException('Event not found');
   
-    const user = await this.prisma.user.findUnique({
-      where: { id: dto.assignedTo },
-    });
-    if (!user) throw new NotFoundException('User not found');
+    if (!creator || !targetUser)
+      throw new NotFoundException('User not found');
+  
+    // 🔒 ROLE ENFORCEMENT
+  
+    if (creator.role === Role.VOLUNTEER) {
+      throw new ForbiddenException('Volunteers cannot assign tasks');
+    }
+  
+    if (creator.role === Role.TEAM_LEAD && targetUser.role !== Role.VOLUNTEER) {
+      throw new ForbiddenException(
+        'Team Leads can assign only to Volunteers',
+      );
+    }
+  
+    if (creator.role === Role.ADMIN && targetUser.role !== Role.TEAM_LEAD) {
+      throw new ForbiddenException(
+        'Admins can assign only to Team Leads',
+      );
+    }
+  
+    // 🔒 OPTIONAL: strict hierarchy validation
+    if (targetUser.reportsToId !== creator.id && creator.role !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException(
+        'You can assign tasks only to your subordinates',
+      );
+    }
   
     const task = await this.prisma.task.create({
       data: {
@@ -56,78 +81,88 @@ export class TasksService {
         description: dto.description,
         deadline: new Date(dto.deadline),
         eventId: dto.eventId,
-        assignedTo: dto.assignedTo,
+        assignedToId: targetUser.id,
+        assignedById: creator.id,
       },
     });
   
-    // 📧 SEND EMAIL
-    if (this.transporter) {
-      try {
-        await this.transporter.sendMail({
-          from: this.config.get('SMTP_FROM'),
-          to: user.email,
-          subject: `New Task Assigned: ${dto.title}`,
-          html: `
-            <h2>You have been assigned a new task</h2>
-            <p><strong>Title:</strong> ${dto.title}</p>
-            <p><strong>Description:</strong> ${dto.description}</p>
-            <p><strong>Deadline:</strong> ${new Date(dto.deadline).toLocaleString()}</p>
-            <p><strong>Event:</strong> ${event.title}</p>
-            <br/>
-            <p>Please log in to the portal to view details.</p>
-          `,
-        });
-      } catch (err) {
-        console.error('Email failed:', err);
-      }
-    }
-
     await this.prisma.activityLog.create({
       data: {
-        action: "Task Created",
-        details: `Task "${dto.title}" created for ${user.name}`,
-        userId: currentUser.sub, // 🔥 who created the task
+        action: 'Task Created',
+        details: `Task "${dto.title}" assigned to ${targetUser.name}`,
+        userId: creator.id,
       },
     });
   
     return task;
   }
 
+  async getAllTasks() {
+    return this.prisma.task.findMany({
+      include: {
+        assignedTo: {
+          select: {
+            id: true,
+            name: true,
+            role: true,
+          },
+        },
+        assignedBy: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        event: {
+          select: {
+            id: true,
+            title: true,
+          },
+        },
+      },
+      orderBy: { deadline: 'asc' },
+    });
+  }
+
   async assign(taskId: string, dto: AssignTaskDto, currentUser: JwtPayload) {
     const task = await this.prisma.task.findUnique({
       where: { id: taskId },
     });
+  
     if (!task) throw new NotFoundException('Task not found');
   
-    const user = await this.prisma.user.findUnique({
-      where: { id: dto.assignedTo },
+    const creator = await this.prisma.user.findUnique({
+      where: { id: currentUser.sub },
     });
-    if (!user) throw new NotFoundException('User not found');
+  
+    const targetUser = await this.prisma.user.findUnique({
+      where: { id: dto.assignedToId },
+      select: {
+        id: true,
+        role: true,
+        reportsToId: true,
+        name: true,
+      },
+    });
+  
+    if (!creator || !targetUser)
+      throw new NotFoundException('User not found');
+  
+    // 🔒 Same hierarchy rules
+    if (creator.role === Role.VOLUNTEER)
+      throw new ForbiddenException('Volunteers cannot assign');
+  
+    if (creator.role === Role.TEAM_LEAD && targetUser.role !== Role.VOLUNTEER)
+      throw new ForbiddenException('Team Lead → Volunteer only');
+  
+    if (creator.role === Role.ADMIN && targetUser.role !== Role.TEAM_LEAD)
+      throw new ForbiddenException('Admin → Team Lead only');
   
     const updatedTask = await this.prisma.task.update({
       where: { id: taskId },
-      data: { assignedTo: dto.assignedTo },
-    });
-  
-    // 📧 SEND EMAIL
-    if (this.transporter) {
-      await this.transporter.sendMail({
-        from: this.config.get('SMTP_FROM'),
-        to: user.email,
-        subject: `Task Assigned to You`,
-        html: `
-          <h2>You have been assigned a task</h2>
-          <p><strong>Task:</strong> ${task.title}</p>
-          <p>Please log in to check details.</p>
-        `,
-      });
-    }
-
-    await this.prisma.activityLog.create({
       data: {
-        action: "Task Assigned",
-        details: `Task "${task.title}" assigned to ${user.name}`,
-        userId: currentUser.sub,
+        assignedToId: targetUser.id,
+        assignedById: creator.id,
       },
     });
   
@@ -149,7 +184,7 @@ export class TasksService {
   
     // 🔒 Volunteers can only update their own tasks, and only to COMPLETED
     if (user.role === Role.VOLUNTEER) {
-      if (task.assignedTo !== user.sub) {
+      if (task.assignedToId !== user.sub) {
         throw new ForbiddenException('You cannot update this task');
       }
 
@@ -175,18 +210,152 @@ export class TasksService {
     });
   }
 
-  async getAllTasks() {
-    return this.prisma.task.findMany({
-      include: {
-        user: true,
-        event: true,
+  async getVisibleTasks(currentUser: JwtPayload) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: currentUser.sub },
+      select: { id: true, role: true },
+    });
+  
+    if (!user) throw new NotFoundException('User not found');
+  
+    // 🔥 SUPER ADMIN → everything
+    if (user.role === Role.SUPER_ADMIN) {
+      return this.prisma.task.findMany({
+        include: {
+          assignedTo: {
+            select: {
+              id: true,
+              name: true,
+              role: true,   // ✅ IMPORTANT
+            },
+          },
+          assignedBy: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          event: true,
+        },
+      });
+    }
+    
+  
+    // 🔥 VOLUNTEER → only own tasks
+    if (user.role === Role.VOLUNTEER) {
+      return this.prisma.task.findMany({
+        where: { assignedToId: user.id },
+        include: {
+          assignedBy: true,
+          event: true,
+        },
+      });
+    }
+  
+    // 🔥 TEAM LEAD → their volunteers' tasks
+    if (user.role === Role.TEAM_LEAD) {
+      const volunteers = await this.prisma.user.findMany({
+        where: { reportsToId: user.id },
+        select: { id: true },
+      });
+  
+      const volunteerIds = volunteers.map(v => v.id);
+  
+      return this.prisma.task.findMany({
+        where: {
+          assignedToId: {
+            in: volunteerIds,
+          },
+        },
+        include: {
+          assignedTo: true,
+          event: true,
+        },
+      });
+    }
+  
+    // 🔥 ADMIN → their team leads + their volunteers
+    if (user.role === Role.ADMIN) {
+      const teamLeads = await this.prisma.user.findMany({
+        where: { reportsToId: user.id },
+        select: { id: true },
+      });
+  
+      const teamLeadIds = teamLeads.map(t => t.id);
+  
+      const volunteers = await this.prisma.user.findMany({
+        where: {
+          reportsToId: {
+            in: teamLeadIds,
+          },
+        },
+        select: { id: true },
+      });
+  
+      const allIds = [
+        ...teamLeadIds,
+        ...volunteers.map(v => v.id),
+      ];
+  
+      return this.prisma.task.findMany({
+        where: {
+          assignedToId: {
+            in: allIds,
+          },
+        },
+        include: {
+          assignedTo: true,
+          event: true,
+        },
+      });
+    }
+  
+    return [];
+  }
+
+  async remove(id: string, currentUser: JwtPayload) {
+    const task = await this.prisma.task.findUnique({ where: { id } });
+  
+    if (!task) throw new NotFoundException("Task not found");
+  
+    if (
+      currentUser.role !== Role.SUPER_ADMIN &&
+      currentUser.role !== Role.ADMIN
+    ) {
+      throw new ForbiddenException("Only Admin or Super Admin can delete tasks");
+    }
+  
+    await this.prisma.task.delete({ where: { id } });
+  
+    return { message: "Task deleted" };
+  }
+
+  async update(id: string, dto: UpdateTaskDto, currentUser: JwtPayload) {
+    const task = await this.prisma.task.findUnique({ where: { id } });
+  
+    if (!task) throw new NotFoundException("Task not found");
+  
+    if (
+      currentUser.role !== Role.SUPER_ADMIN &&
+      currentUser.role !== Role.ADMIN
+    ) {
+      throw new ForbiddenException("Only Admin or Super Admin can edit tasks");
+    }
+  
+    return this.prisma.task.update({
+      where: { id },
+      data: {
+        ...(dto.title && { title: dto.title }),
+        ...(dto.description && { description: dto.description }),
+        ...(dto.deadline && { deadline: new Date(dto.deadline) }),
+        ...(dto.assignedToId && { assignedToId: dto.assignedToId }), // ✅ THIS IS CRITICAL
       },
     });
   }
 
   async getTasksByUser(userId: string) {
     return this.prisma.task.findMany({
-      where: { assignedTo: userId },
+      where: { assignedToId: userId },
       include: {
         event: { select: { id: true, title: true } },
       },

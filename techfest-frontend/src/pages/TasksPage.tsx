@@ -23,6 +23,7 @@ interface UserOption {
   id: string;
   name: string;
   role: string;
+  reportsToId?: string | null;
 }
 
 interface Task {
@@ -32,9 +33,19 @@ interface Task {
   deadline: string;
   status: "TODO" | "IN_PROGRESS" | "COMPLETED";
   eventId: string;
-  assignedTo: string;
+
+  assignedTo: {
+    id: string;
+    name: string;
+    role: string;   // ✅ add this
+  };
+
+  assignedBy?: {
+    id: string;
+    name: string;
+  };
+
   event?: { title: string };
-  user?: { name: string };
   completedAt?: string | null;
 }
 
@@ -48,6 +59,13 @@ const statusStyles: Record<string, string> = {
   TODO: "bg-muted text-muted-foreground",
   IN_PROGRESS: "bg-info/10 text-info border-info/20",
   COMPLETED: "bg-success/10 text-success border-success/20",
+};
+
+const roleColors: Record<string, string> = {
+  SUPER_ADMIN: "bg-red-100 text-red-700",
+  ADMIN: "bg-blue-100 text-blue-700",
+  TEAM_LEAD: "bg-purple-100 text-purple-700",
+  VOLUNTEER: "bg-green-100 text-green-700",
 };
 
 const chartConfig = {
@@ -72,17 +90,51 @@ const TasksPage = () => {
   const [saving, setSaving] = useState(false);
   const { user } = useAuth();
   const [events, setEvents] = useState<EventOption[]>([]);
+  const [editTask, setEditTask] = useState<Task | null>(null);
 
-  const getTasksEndpoint = () =>
-    user?.role === "VOLUNTEER" ? "/tasks/me" : "/tasks";
+  const getTasksEndpoint = () => "/tasks";
 
-  const fetchTasks = () => {
-    setLoading(true);
+  const fetchTasks = async () => {
+    try {
+      setLoading(true);
+      const res = await api.get("/tasks");
+  
+      // Force new array reference
+      setTasks([...res.data]);
+    } catch {
+      toast.error("Failed to load tasks");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    api.get(getTasksEndpoint())
-      .then((res) => setTasks(res.data))
-      .catch(() => toast.error("Failed to load tasks"))
-      .finally(() => setLoading(false));
+  const handleEdit = (task: Task) => {
+    setForm({
+      title: task.title,
+      description: task.description || "",
+      deadline: task.deadline.split("T")[0],
+      eventId: task.eventId,
+      assignedTo: task.assignedTo?.id || "",
+    });
+  
+    setEditTask(task);
+    setOpen(true);
+  };
+  
+  const handleDelete = async (id: string) => {
+    const confirmDelete = window.confirm(
+      "Are you sure you want to delete this task?"
+    );
+  
+    if (!confirmDelete) return;
+  
+    try {
+      await api.delete(`/tasks/${id}`);
+      toast.success("Task deleted");
+      fetchTasks();
+    } catch {
+      toast.error("Delete failed");
+    }
   };
 
   useEffect(() => {
@@ -94,37 +146,45 @@ const TasksPage = () => {
       .then(res => setEvents(res.data))
       .catch(() => toast.error("Failed to load events"));
 
-    if (user.role !== "VOLUNTEER") {
-      api.get("/users")
-        .then(res => {
-          const volunteers = res.data.filter(
-            (u: UserOption) => u.role === "VOLUNTEER"
-          );
-          setUsers(volunteers);
-        })
-        .catch(() => toast.error("Failed to load users"));
-    }
+      if (user.role !== "VOLUNTEER") {
+        api.get("/users")
+          .then(res => setUsers(res.data))
+          .catch(() => toast.error("Failed to load users"));
+      }
   }, [user]);
 
-  const createTask = async (e: React.FormEvent) => {
+  const saveTask = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
   
     try {
-      await api.post("/tasks", {
-        title: form.title,
-        description: form.description,
-        deadline: new Date(form.deadline).toISOString(),
-        eventId: form.eventId,
-        assignedTo: form.assignedTo,
-      });
+      if (editTask) {
+        await api.patch(`/tasks/${editTask.id}`, {
+          title: form.title,
+          description: form.description,
+          deadline: new Date(form.deadline).toISOString(),
+          assignedToId: form.assignedTo,   // ✅ ADD THIS
+        });
   
-      toast.success("Task created");
+        toast.success("Task updated");
+      } else {
+        await api.post("/tasks", {
+          title: form.title,
+          description: form.description,
+          deadline: new Date(form.deadline).toISOString(),
+          eventId: form.eventId,
+          assignedToId: form.assignedTo,
+        });
+  
+        toast.success("Task created");
+      }
+  
       setOpen(false);
-      fetchTasks();
-    } catch (err) {
-      console.log(err);
-      toast.error("Failed to create task");
+      setEditTask(null);
+  
+      await fetchTasks();   // ✅ important
+    } catch {
+      toast.error("Operation failed");
     } finally {
       setSaving(false);
     }
@@ -185,7 +245,7 @@ const TasksPage = () => {
             )}
             <DialogContent>
               <DialogHeader><DialogTitle>Create Task</DialogTitle></DialogHeader>
-              <form onSubmit={createTask} className="space-y-4">
+              <form onSubmit={saveTask} className="space-y-4">
                 <div className="space-y-2"><Label>Title</Label><Input value={form.title} onChange={(e) => setForm({...form, title: e.target.value})} required /></div>
                 <div className="space-y-2"><Label>Description</Label><Input value={form.description} onChange={(e) => setForm({...form, description: e.target.value})} /></div>
                 <div className="space-y-2">
@@ -231,8 +291,8 @@ const TasksPage = () => {
                     <SelectContent>
                       {users.map((user) => (
                         <SelectItem key={user.id} value={user.id}>
-                          {user.name}
-                        </SelectItem>
+                        {user.name} ({user.role.replace("_", " ")})
+                      </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -309,6 +369,22 @@ const TasksPage = () => {
                           <h4 className="text-sm font-medium leading-tight">{task.title}</h4>
                           <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
                         </div>
+
+                        <div className="text-xs text-muted-foreground">
+                          Assigned to:{" "}
+                          <span className="font-medium">
+                            {task.assignedTo?.name}
+                          </span>{" "}
+                          <Badge
+                            className={`text-[10px] ${
+                              roleColors[task.assignedTo?.role] ||
+                              "bg-gray-100 text-gray-700"
+                            }`}
+                          >
+                            {task.assignedTo?.role.replace("_", " ")}
+                          </Badge>
+                        </div>
+
                         {task.description && <p className="text-xs text-muted-foreground line-clamp-2">{task.description}</p>}
                         {user?.role !== "VOLUNTEER" ? (
                           <Select
@@ -331,7 +407,7 @@ const TasksPage = () => {
                             </Badge>
 
                             {/* ✅ Checkbox only for assigned volunteer */}
-                            {user?.id === task.assignedTo &&
+                            {user?.id === task.assignedTo?.id &&
                               task.status !== "COMPLETED" && (
                                 <div className="flex items-center gap-2 mt-2">
                                   <input
@@ -346,6 +422,26 @@ const TasksPage = () => {
                               )}
                           </>
                         )}
+
+                        {(user?.role === "SUPER_ADMIN" || user?.role === "ADMIN") && (
+                              <div className="flex gap-2 mt-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleEdit(task)}
+                                >
+                                  Edit
+                                </Button>
+
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => handleDelete(task.id)}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            )}
                       </CardContent>
                     </Card>
                   ))}

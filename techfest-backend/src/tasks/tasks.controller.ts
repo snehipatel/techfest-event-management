@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -18,6 +19,7 @@ import { CreateTaskDto } from './dto/create-task.dto';
 import { AssignTaskDto } from './dto/assign-task.dto';
 import { UpdateTaskStatusDto } from './dto/update-task-status.dto';
 import { TasksService } from './tasks.service';
+import { UpdateTaskDto } from './dto/update-task.dto';
 
 @Controller('tasks')
 @UseGuards(JwtAuthGuard)
@@ -50,9 +52,10 @@ export class TasksController {
       Role.CLUB_COORDINATOR,
       Role.TEAM_LEAD,
     )
-  getAllTasks() {
-    return this.tasksService.getAllTasks();
-  }
+    @Get()
+    getTasks(@Req() req) {
+      return this.tasksService.getVisibleTasks(req.user);
+    }
 
   @Patch(':id/assign')
   assign(
@@ -76,4 +79,18 @@ export class TasksController {
   getMyTasks(@Req() req: { user: JwtPayload }) {
     return this.tasksService.getTasksByUser(req.user.sub);
   }
+
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTaskDto,
+    @Req() req: { user: JwtPayload },
+  ) {
+    return this.tasksService.update(id, dto, req.user);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string, @Req() req: { user: JwtPayload }) {
+    return this.tasksService.remove(id, req.user);
+}
 }
